@@ -645,7 +645,7 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-app.listen(PORT, () => {
+app.listen(PORT,"0.0.0.0", () => {
   console.log(`WhatsApp Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`API Key: ${API_KEY}`);
