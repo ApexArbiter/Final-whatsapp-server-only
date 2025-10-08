@@ -46,6 +46,99 @@ const validateApiKey = (req, res, next) => {
 const sessions = new Map();
 const qrCodes = new Map();
 
+// Health monitoring for automatic cleanup
+const healthMonitor = {
+  failedRequests: 0,
+  maxFailedRequests: 2,
+  isMonitoring: false,
+
+  startMonitoring() {
+    if (this.isMonitoring) return;
+    this.isMonitoring = true;
+
+    // Check health every 30 seconds
+    setInterval(() => {
+      this.checkHealth();
+    }, 30000);
+
+    console.log(
+      "🔍 Health monitoring started - will auto-cleanup if server becomes unresponsive"
+    );
+  },
+
+  async checkHealth() {
+    try {
+      // Simple health check - if this fails, server might be stuck
+      const response = await fetch(`http://localhost:${PORT}/ping`);
+      if (response.ok) {
+        this.failedRequests = 0; // Reset counter on successful response
+      } else {
+        this.failedRequests++;
+      }
+    } catch (error) {
+      this.failedRequests++;
+      console.warn(
+        `⚠️ Health check failed (${this.failedRequests}/${this.maxFailedRequests}):`,
+        error.message
+      );
+
+      if (this.failedRequests >= this.maxFailedRequests) {
+        console.log(
+          "🚨 Server appears unresponsive - initiating automatic cleanup..."
+        );
+        await this.performCleanup();
+      }
+    }
+  },
+
+  async performCleanup() {
+    try {
+      console.log("🧹 Performing automatic cleanup...");
+
+      // Stop all sessions gracefully
+      for (const [sessionId, session] of sessions) {
+        try {
+          if (session.client) {
+            await session.client.destroy();
+          }
+        } catch (error) {
+          console.warn(
+            `Warning during cleanup for session ${sessionId}:`,
+            error.message
+          );
+        }
+      }
+
+      // Clear sessions
+      sessions.clear();
+      qrCodes.clear();
+
+      // Clean up auth files
+      const fs = require("fs");
+      const path = require("path");
+      const authDir = path.join(__dirname, ".wwebjs_auth");
+
+      if (fs.existsSync(authDir)) {
+        try {
+          fs.rmSync(authDir, { recursive: true, force: true });
+          console.log("✅ Authentication files cleaned up automatically");
+        } catch (cleanupError) {
+          console.warn(
+            "⚠️ Could not clean up auth files:",
+            cleanupError.message
+          );
+        }
+      }
+
+      // Reset monitoring
+      this.failedRequests = 0;
+      console.log("🔄 Server reset - ready for new connections");
+    } catch (error) {
+      console.error("❌ Error during automatic cleanup:", error);
+    }
+  },
+};
+
 // WhatsApp Client Class
 class WhatsAppSession {
   constructor(sessionId) {
@@ -130,6 +223,12 @@ class WhatsAppSession {
       this.isReady = false;
     });
 
+    this.client.on("error", (error) => {
+      console.error(`Session ${this.sessionId} error:`, error);
+      this.status = "error";
+      this.isReady = false;
+    });
+
     this.client.on("message", (message) => {
       console.log(
         `Message received in session ${this.sessionId}:`,
@@ -211,7 +310,17 @@ class WhatsAppSession {
   async stop() {
     try {
       if (this.client) {
-        await this.client.destroy();
+        // Gracefully destroy the client
+        try {
+          await this.client.destroy();
+        } catch (destroyError) {
+          console.warn(
+            `Warning: Error during client destroy for session ${this.sessionId}:`,
+            destroyError.message
+          );
+          // Force cleanup if destroy fails
+          this.client = null;
+        }
         this.status = "disconnected";
         this.isReady = false;
         this.qrCode = null;
@@ -219,7 +328,8 @@ class WhatsAppSession {
       return { success: true, message: "Session stopped" };
     } catch (error) {
       console.error(`Error stopping session ${this.sessionId}:`, error);
-      throw error;
+      // Don't throw error, just log it and return success
+      return { success: true, message: "Session stopped with warnings" };
     }
   }
 
@@ -606,7 +716,31 @@ app.get("/health", (req, res) => {
     uptime: process.uptime(),
     timestamp: new Date(),
     activeSessions: sessions.size,
+    healthMonitor: {
+      isMonitoring: healthMonitor.isMonitoring,
+      failedRequests: healthMonitor.failedRequests,
+      maxFailedRequests: healthMonitor.maxFailedRequests,
+    },
   });
+});
+
+// Manual cleanup endpoint
+app.post("/cleanup", validateApiKey, async (req, res) => {
+  try {
+    console.log("🧹 Manual cleanup requested");
+    await healthMonitor.performCleanup();
+    res.json({
+      success: true,
+      message: "Manual cleanup completed successfully",
+      timestamp: new Date(),
+    });
+  } catch (error) {
+    res.status(500).json({
+      success: false,
+      error: "Cleanup failed",
+      message: error.message,
+    });
+  }
 });
 
 // Error handling middleware
@@ -644,6 +778,17 @@ process.on("SIGINT", async () => {
   process.exit(0);
 });
 
+// Handle uncaught exceptions to prevent crashes
+process.on("uncaughtException", (error) => {
+  console.error("Uncaught Exception:", error);
+  console.log("Server will continue running...");
+});
+
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("Unhandled Rejection at:", promise, "reason:", reason);
+  console.log("Server will continue running...");
+});
+
 process.on("SIGTERM", async () => {
   console.log("Received SIGTERM, shutting down gracefully...");
 
@@ -665,4 +810,7 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log(`WhatsApp Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`API Key: ${API_KEY}`);
+
+  // Start health monitoring for automatic cleanup
+  healthMonitor.startMonitoring();
 });
