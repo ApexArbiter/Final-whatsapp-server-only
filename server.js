@@ -25,6 +25,13 @@ const API_KEY = "MAHAD";
 app.use(express.json({ limit: "50mb" }));
 app.use(express.urlencoded({ limit: "50mb", extended: true }));
 app.use(cors());
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "X-API-Key"],
+  })
+);
 
 // API Key validation middleware
 const validateApiKey = (req, res, next) => {
@@ -132,7 +139,7 @@ class WhatsAppSession {
   }
 
   async sendMessage(chatId, contentType, content, options = {}) {
-    console.log("Options:",options)
+    console.log("Options:", options);
     if (!this.isReady) {
       throw new Error("WhatsApp client is not ready");
     }
@@ -146,13 +153,15 @@ class WhatsAppSession {
           break;
 
         case "MessageMedia":
-  const media = new MessageMedia(
-    content.mimetype,
-    content.data,
-    content.filename
-  );
-  result = await this.client.sendMessage(chatId, media, { caption: options.caption });
-  break;
+          const media = new MessageMedia(
+            content.mimetype,
+            content.data,
+            content.filename
+          );
+          result = await this.client.sendMessage(chatId, media, {
+            caption: options.caption,
+          });
+          break;
 
         case "MessageMediaFromURL":
           const mediaFromUrl = await MessageMedia.fromUrl(content, options);
@@ -433,40 +442,47 @@ app.post("/client/sendMessage/:sessionId", validateApiKey, async (req, res) => {
   }
 });
 
-
 // Send message with media (for bill images)
-app.post("/message/media-base64/:sessionId", validateApiKey, async (req, res) => {
-  try {
-    const { sessionId } = req.params;
-    const { phoneNumber, mediaData, mimeType, filename, caption } = req.body;
-    
-    const session = sessions.get(sessionId);
-    if (!session?.isReady) {
-      return res.status(400).json({ success: false, error: "Session not ready" });
+app.post(
+  "/message/media-base64/:sessionId",
+  validateApiKey,
+  async (req, res) => {
+    try {
+      const { sessionId } = req.params;
+      const { phoneNumber, mediaData, mimeType, filename, caption } = req.body;
+
+      const session = sessions.get(sessionId);
+      if (!session?.isReady) {
+        return res
+          .status(400)
+          .json({ success: false, error: "Session not ready" });
+      }
+
+      const chatId = phoneNumber + "@c.us";
+      const result = await session.sendMessage(chatId, "MessageMedia", {
+        mimetype: mimeType,
+        data: mediaData,
+        filename: filename,
+      });
+
+      res.json(result);
+    } catch (error) {
+      res.status(500).json({ success: false, error: error.message });
     }
-
-    const chatId = phoneNumber + "@c.us";
-    const result = await session.sendMessage(chatId, "MessageMedia", {
-      mimetype: mimeType,
-      data: mediaData,
-      filename: filename
-    });
-
-    res.json(result);
-  } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
   }
-});
+);
 
 // Send text message
 app.post("/message/text/:sessionId", validateApiKey, async (req, res) => {
   try {
     const { sessionId } = req.params;
     const { phoneNumber, message } = req.body;
-    
+
     const session = sessions.get(sessionId);
     if (!session?.isReady) {
-      return res.status(400).json({ success: false, error: "Session not ready" });
+      return res
+        .status(400)
+        .json({ success: false, error: "Session not ready" });
     }
 
     const chatId = phoneNumber + "@c.us";
@@ -645,7 +661,7 @@ process.on("SIGTERM", async () => {
   process.exit(0);
 });
 
-app.listen(PORT,"0.0.0.0", () => {
+app.listen(PORT, "0.0.0.0", () => {
   console.log(`WhatsApp Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || "development"}`);
   console.log(`API Key: ${API_KEY}`);
